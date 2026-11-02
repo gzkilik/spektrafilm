@@ -37,6 +37,30 @@ def test_execute_simulation_request_uses_runtime_runner_without_padding() -> Non
     assert result.status_message == 'Display transform: active'
 
 
+def test_execute_simulation_request_passes_progress_callback_to_runner() -> None:
+    progress = []
+    request = runtime_module.SimulationRequest(
+        mode_label='Scan',
+        image=np.zeros((1, 1, 3), dtype=np.float32),
+        params=object(),
+        output_color_space='sRGB',
+        use_display_transform=False,
+        progress_callback=progress.append,
+    )
+
+    def run_simulation(image, params, *, on_progress):
+        on_progress(40)
+        return image
+
+    runtime_module.execute_simulation_request(
+        request,
+        run_simulation_fn=run_simulation,
+        prepare_output_display_image_fn=lambda image, **kwargs: (image, 'Display transform: disabled'),
+    )
+
+    assert progress == [40]
+
+
 def test_simulation_worker_emits_failure_message() -> None:
     request = runtime_module.SimulationRequest(
         mode_label='Preview',
@@ -49,12 +73,92 @@ def test_simulation_worker_emits_failure_message() -> None:
         request,
         execute_request=lambda request: (_ for _ in ()).throw(ValueError('bad simulation')),
     )
-    worker.signals = SimpleNamespace(finished=FakeSignal(), failed=FakeSignal())
+    worker.signals = SimpleNamespace(finished=FakeSignal(), failed=FakeSignal(), progress=FakeSignal())
 
     worker.run()
 
     assert worker.signals.finished.emitted == []
     assert worker.signals.failed.emitted == ['ValueError: bad simulation']
+
+
+def test_simulation_worker_emits_progress_callback() -> None:
+    request = runtime_module.SimulationRequest(
+        mode_label='Scan',
+        image=np.zeros((1, 1, 3), dtype=np.float32),
+        params=object(),
+        output_color_space='sRGB',
+        use_display_transform=False,
+    )
+    worker = runtime_module.SimulationWorker(
+        request,
+        execute_request=lambda request: (
+            request.progress_callback(0),
+            request.progress_callback(50),
+            request.progress_callback(100),
+            runtime_module.SimulationResult(
+                mode_label=request.mode_label,
+                display_image=request.image,
+                float_image=request.image,
+                output_color_space=request.output_color_space,
+                use_display_transform=request.use_display_transform,
+                status_message='done',
+            ),
+        )[-1],
+    )
+    worker.signals = SimpleNamespace(
+        finished=FakeSignal(),
+        failed=FakeSignal(),
+        progress=FakeSignal(),
+    )
+
+    worker.run()
+
+    assert worker.signals.progress.emitted == [0, 50, 100]
+    assert len(worker.signals.finished.emitted) == 1
+    assert worker.signals.failed.emitted == []
+
+
+def test_raw_image_load_worker_emits_memory_error_message() -> None:
+    request = runtime_module.RawImageLoadRequest(
+        path='example.nef',
+        options={},
+    )
+    worker = runtime_module.RawImageLoadWorker(
+        request,
+        load_raw_file=lambda path, **kwargs: (_ for _ in ()).throw(MemoryError()),
+    )
+    worker.signals = SimpleNamespace(finished=FakeSignal(), failed=FakeSignal())
+
+    worker.run()
+
+    assert worker.signals.finished.emitted == []
+    assert worker.signals.failed.emitted == [
+        'Not enough memory to decode this RAW image at full resolution. '
+        'Close other applications or try a smaller image.'
+    ]
+
+
+def test_raw_image_load_worker_emits_loaded_image_and_lens_info() -> None:
+    lens_info = {'summary': 'Nikon lens correction'}
+    request = runtime_module.RawImageLoadRequest(
+        path='example.nef',
+        options={'lens_info_out': lens_info, 'lens_correction': True},
+    )
+    image = np.zeros((2, 3, 3), dtype=np.float32)
+    worker = runtime_module.RawImageLoadWorker(
+        request,
+        load_raw_file=lambda path, **kwargs: image,
+    )
+    worker.signals = SimpleNamespace(finished=FakeSignal(), failed=FakeSignal())
+
+    worker.run()
+
+    assert worker.signals.failed.emitted == []
+    result = worker.signals.finished.emitted[0]
+    assert result.path == 'example.nef'
+    assert result.image is image
+    assert result.lens_info == lens_info
+    assert result.lens_correction_requested is True
 
 
 def test_prepare_input_color_preview_image_converts_to_srgb_float_preview() -> None:

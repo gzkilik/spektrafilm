@@ -303,6 +303,11 @@ To remove the environment:
 conda env remove -n spektrafilm
 ```
 
+On Windows, after setting up the project virtual environment, double-click
+`Launch Spektrafilm (Fresh Settings).vbs` in the repository folder to start the
+GUI with isolated, reset settings. This does not change your regular Spektrafilm
+settings.
+
 ### Install options
 
 | Install command | What you get |
@@ -349,7 +354,9 @@ the white balance mode (`as shot`, `daylight`, `tungsten`, or `custom`), set
 temperature and tint when using `custom`, then click `select file`. The RAW
 importer uses `rawpy` and converts the image to the current `input color space`
 and `apply CCTF decoding` settings. You can use `reprocess raw` to reload the
-same file and reprocess it with the new settings.
+same file and reprocess it with the new settings. RAW decoding runs in the
+background so the GUI remains responsive; full-resolution images can still
+require substantial memory. Nikon NEF files are supported by the RAW decoder.
 
 > [!TIP] 
 > Hover over the widgets and controls to see a helpful tooltip.
@@ -420,7 +427,8 @@ video](https://github.com/user-attachments/assets/534746b5-87ec-4bd0-96c9-5214ef
 - The simulation is quite slow for full-resolution images. On my laptop it takes
   roughly 10 seconds to process 6 MP images. I usually adjust most values with
   `PREVIEW`. When a final image is needed, use `SCAN`, which bypasses image
-  scaling.
+  scaling. The status bar reports simulation progress as pipeline stages
+  complete; a long-running stage may pause the percentage until it finishes.
 - Based on my experience building the profiles, Fujifilm data are less
   self-consistent than Kodak data.
 
@@ -438,5 +446,3 @@ spektrafilm is developed in my free time, often during late nights after my rese
 
 Sample images are from
 [signatureedits.com](https://www.signatureedits.com/)/free-raw-photos.
-
-

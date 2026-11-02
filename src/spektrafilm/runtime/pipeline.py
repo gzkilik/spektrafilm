@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from time import perf_counter
+from typing import Callable
 
 import numpy as np
 
@@ -98,7 +99,14 @@ class SimulationPipeline:
 
         self._topology: list[Node] = self._build_topology()
 
-    def process(self, image, *, inject: str | None = None, collect: str | None = None):
+    def process(
+        self,
+        image,
+        *,
+        inject: str | None = None,
+        collect: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+    ):
         """Run the pipeline.
 
         Defaults run end-to-end (``rgb_in`` → ``rgb_out``). Pass
@@ -115,6 +123,7 @@ class SimulationPipeline:
             return run_topology(
                 self._topology, inject, collect, image,
                 on_fire=self._record_node_timing,
+                on_progress=on_progress,
             )
         finally:
             self._last_elapsed_time = perf_counter() - start

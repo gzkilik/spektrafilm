@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+from rawpy import LibRawError
 from qtpy import QtCore
 
 
@@ -12,6 +13,7 @@ DISPLAY_PREVIEW_COLOR_SPACE = 'sRGB'
 QObject = getattr(QtCore, 'QObject')
 QRunnable = getattr(QtCore, 'QRunnable')
 Signal = getattr(QtCore, 'Signal')
+Slot = getattr(QtCore, 'Slot')
 
 
 @dataclass(slots=True)
@@ -21,6 +23,7 @@ class SimulationRequest:
     params: object
     output_color_space: str
     use_display_transform: bool
+    progress_callback: Callable[[int], None] | None = None
 
 
 @dataclass(slots=True)
@@ -33,9 +36,95 @@ class SimulationResult:
     status_message: str
 
 
+@dataclass(slots=True)
+class RawImageLoadRequest:
+    path: str
+    options: dict[str, object]
+
+
+@dataclass(slots=True)
+class RawImageLoadResult:
+    path: str
+    image: np.ndarray
+    lens_info: dict[str, str]
+    lens_correction_requested: bool
+
+
 class SimulationWorkerSignals(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(int)
+
+
+class RawImageLoadWorkerSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+
+class RawImageLoadUiRelay(QObject):
+    def __init__(
+        self,
+        *,
+        on_finished: Callable[[RawImageLoadResult], None],
+        on_failed: Callable[[str], None],
+    ) -> None:
+        super().__init__()
+        self._on_finished = on_finished
+        self._on_failed = on_failed
+
+    @Slot(object)
+    def finished(self, result: RawImageLoadResult) -> None:
+        self._on_finished(result)
+
+    @Slot(str)
+    def failed(self, message: str) -> None:
+        self._on_failed(message)
+
+
+class SimulationProgressUiRelay(QObject):
+    def __init__(self, *, on_progress: Callable[[int], None]) -> None:
+        super().__init__()
+        self._on_progress = on_progress
+
+    @Slot(int)
+    def progress(self, percent: int) -> None:
+        self._on_progress(percent)
+
+
+class RawImageLoadWorker(QRunnable):
+    def __init__(
+        self,
+        request: RawImageLoadRequest,
+        *,
+        load_raw_file: Callable[..., np.ndarray],
+    ) -> None:
+        super().__init__()
+        self._request = request
+        self._load_raw_file = load_raw_file
+        self.signals = RawImageLoadWorkerSignals()
+
+    def run(self) -> None:
+        try:
+            image = self._load_raw_file(self._request.path, **self._request.options)
+        except MemoryError:
+            self.signals.failed.emit(
+                'Not enough memory to decode this RAW image at full resolution. '
+                'Close other applications or try a smaller image.'
+            )
+            return
+        except (AttributeError, LibRawError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self.signals.failed.emit(f'{type(exc).__name__}: {exc}')
+            return
+
+        lens_info = self._request.options.get('lens_info_out', {})
+        self.signals.finished.emit(
+            RawImageLoadResult(
+                path=self._request.path,
+                image=image,
+                lens_info=dict(lens_info) if isinstance(lens_info, dict) else {},
+                lens_correction_requested=bool(self._request.options.get('lens_correction', False)),
+            )
+        )
 
 
 class SimulationWorker(QRunnable):
@@ -46,8 +135,16 @@ class SimulationWorker(QRunnable):
         self.signals = SimulationWorkerSignals()
 
     def run(self) -> None:
+        progress_signal = getattr(self.signals, 'progress', None)
+        self._request.progress_callback = progress_signal.emit if progress_signal is not None else None
         try:
             result = self._execute_request(self._request)
+        except MemoryError:
+            self.signals.failed.emit(
+                'Not enough memory to complete this simulation at full resolution. '
+                'Close other applications or try a smaller image.'
+            )
+            return
         except (AttributeError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self.signals.failed.emit(f'{type(exc).__name__}: {exc}')
             return
@@ -212,10 +309,17 @@ def prepare_output_display_image(
 def execute_simulation_request(
     request: SimulationRequest,
     *,
-    run_simulation_fn: Callable[[np.ndarray, object], np.ndarray],
+    run_simulation_fn: Callable[..., np.ndarray],
     prepare_output_display_image_fn: Callable[..., tuple[np.ndarray, str]],
 ) -> SimulationResult:
-    scan = run_simulation_fn(request.image, request.params)
+    if request.progress_callback is None:
+        scan = run_simulation_fn(request.image, request.params)
+    else:
+        scan = run_simulation_fn(
+            request.image,
+            request.params,
+            on_progress=request.progress_callback,
+        )
     scan_display, display_status = prepare_output_display_image_fn(
         scan,
         output_color_space=request.output_color_space,

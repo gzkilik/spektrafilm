@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from spektrafilm.runtime.params_schema import RuntimePhotoParams
 from spektrafilm.runtime.pipeline import SimulationPipeline
 from spektrafilm.utils.preview import resize_for_preview
@@ -19,9 +21,11 @@ class Simulator:
     def __init__(self, params: RuntimePhotoParams):
         self._pipeline = SimulationPipeline(params) # should stay private
 
-    def process(self, image):
+    def process(self, image, *, on_progress: Callable[[int], None] | None = None):
         """Process the input image through the simulation pipeline and return the final result."""
-        return self._pipeline.process(image)
+        if on_progress is None:
+            return self._pipeline.process(image)
+        return self._pipeline.process(image, on_progress=on_progress)
 
     def update_params(self, params):
         """Update the parameters of the simulation pipeline."""

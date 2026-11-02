@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 from qtpy import QtCore, QtWidgets
@@ -148,6 +148,14 @@ class GuiController:
         self._thread_pool = QThreadPool.globalInstance()
         self._active_simulation_worker: runtime.SimulationWorker | None = None
         self._active_simulation_label: str | None = None
+        self._active_raw_load_worker: runtime.RawImageLoadWorker | None = None
+        self._raw_load_ui_relay = runtime.RawImageLoadUiRelay(
+            on_finished=self._on_raw_image_loaded,
+            on_failed=self._on_raw_image_load_failed,
+        )
+        self._simulation_progress_ui_relay = runtime.SimulationProgressUiRelay(
+            on_progress=self._on_simulation_progress,
+        )
         self._runtime_simulator = None
         self._next_runtime_digest_applies_stock_specifics = True
         self._current_input_image: np.ndarray | None = None
@@ -184,39 +192,67 @@ class GuiController:
         self._request_auto_preview_if_enabled()
 
     def load_raw_image(self, path: str) -> None:
+        if self._active_raw_load_worker is not None:
+            set_status(self._viewer, 'A RAW image is already loading')
+            return
+
         gui_state = collect_gui_state(widgets=self._widgets)
-        set_status(self._viewer, "Loading raw...", timeout_ms=0)
         lens_info: dict[str, str] = {}
+        request = runtime.RawImageLoadRequest(
+            path=path,
+            options={
+                'white_balance': gui_state.gui_only.load_raw.white_balance,
+                'temperature': gui_state.gui_only.load_raw.temperature,
+                'tint': gui_state.gui_only.load_raw.tint,
+                'lens_correction': gui_state.gui_only.load_raw.lens_correction,
+                'output_colorspace': gui_state.input_image.io.input_color_space,
+                'output_cctf_encoding': gui_state.input_image.io.input_cctf_decoding,
+                'lens_info_out': lens_info,
+            },
+        )
+        worker = runtime.RawImageLoadWorker(request, load_raw_file=load_and_process_raw_file)
+        worker.signals.finished.connect(self._raw_load_ui_relay.finished)
+        worker.signals.failed.connect(self._raw_load_ui_relay.failed)
+        self._active_raw_load_worker = worker
+        set_status(self._viewer, 'Loading RAW image (large files may take a while)...', timeout_ms=0)
+        self._thread_pool.start(worker)
+
+    def _on_raw_image_loaded(self, result: runtime.RawImageLoadResult) -> None:
+        self._active_raw_load_worker = None
         try:
-            image = load_and_process_raw_file(
-                path,
-                white_balance=gui_state.gui_only.load_raw.white_balance,
-                temperature=gui_state.gui_only.load_raw.temperature,
-                tint=gui_state.gui_only.load_raw.tint,
-                lens_correction=gui_state.gui_only.load_raw.lens_correction,
-                output_colorspace=gui_state.input_image.io.input_color_space,
-                output_cctf_encoding=gui_state.input_image.io.input_cctf_decoding,
-                lens_info_out=lens_info,
+            self._set_or_add_input_stack(result.image)
+        except MemoryError:
+            QMessageBox.critical(
+                dialog_parent(self._viewer),
+                'Load raw',
+                'Failed to load RAW image.\n\n'
+                'Not enough memory to prepare the full-resolution image for display. '
+                'Close other applications or try a smaller image.',
             )
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(dialog_parent(self._viewer), 'Load raw', f'Failed to load RAW image.\n\n{exc}')
             set_status(self._viewer, 'Load raw failed')
             return
 
-        self._current_input_path = path
-        self._set_or_add_input_stack(image)
-
-        lens_summary = lens_info.get('summary')
+        self._current_input_path = result.path
+        lens_summary = result.lens_info.get('summary')
         if lens_summary:
             set_status(
                 self._viewer,
                 f"Loaded raw and applied lens correction: {lens_summary}",
             )
-        elif gui_state.gui_only.load_raw.lens_correction:
+        elif result.lens_correction_requested:
             set_status(self._viewer, "Loaded raw, lens correction not applied")
         else:
             set_status(self._viewer, "Loaded raw")
         self._request_auto_preview_if_enabled()
+
+    def _on_raw_image_load_failed(self, message: str) -> None:
+        self._active_raw_load_worker = None
+        QMessageBox.critical(
+            dialog_parent(self._viewer),
+            'Load raw',
+            f'Failed to load RAW image.\n\n{message}',
+        )
+        set_status(self._viewer, 'Load raw failed')
 
     def refresh_preview_cache(self, *_args) -> None:
         input_image = self._current_input_image
@@ -626,7 +662,13 @@ class GuiController:
             pil_image_module=PILImage,
         )
 
-    def _process_image_with_runtime(self, image_data: np.ndarray, params) -> np.ndarray:
+    def _process_image_with_runtime(
+        self,
+        image_data: np.ndarray,
+        params,
+        *,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> np.ndarray:
         apply_stocks_specifics = (
             self._runtime_simulator is None
             or self._next_runtime_digest_applies_stock_specifics
@@ -641,7 +683,9 @@ class GuiController:
             else:
                 self._runtime_simulator.update_params(digested_params)
             self._next_runtime_digest_applies_stock_specifics = False
-            return self._runtime_simulator.process(image_data)
+            if on_progress is None:
+                return self._runtime_simulator.process(image_data)
+            return self._runtime_simulator.process(image_data, on_progress=on_progress)
         except Exception:
             self._runtime_simulator = None
             raise
@@ -715,13 +759,20 @@ class GuiController:
         worker = runtime.SimulationWorker(request, execute_request=self._execute_simulation_request)
         worker.signals.finished.connect(self._on_simulation_finished)
         worker.signals.failed.connect(self._on_simulation_failed)
+        worker.signals.progress.connect(self._simulation_progress_ui_relay.progress)
         self._active_simulation_worker = worker
         self._active_simulation_label = mode_label
         self._active_simulation_reports_status = report_status
         self._set_simulation_controls_enabled(False)
         if report_status:
-            set_status(self._viewer, f'Computing {mode_label.lower()}...', timeout_ms=0)
+            set_status(self._viewer, f'Computing {mode_label.lower()}... 0%', timeout_ms=0)
         self._thread_pool.start(worker)
+
+    def _on_simulation_progress(self, percent: int) -> None:
+        if not self._active_simulation_reports_status:
+            return
+        mode_label = self._active_simulation_label or 'Simulation'
+        set_status(self._viewer, f'Computing {mode_label.lower()}... {percent}%', timeout_ms=0)
 
     def _on_simulation_finished(self, result: SimulationResult) -> None:
         report_status = self._active_simulation_reports_status

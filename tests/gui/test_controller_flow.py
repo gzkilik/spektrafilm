@@ -18,6 +18,10 @@ from spektrafilm_gui.controller_layers import (
 from .helpers import FakeLayer, FakeViewer, make_test_controller_gui_state
 
 
+def _run_workers_inline(controller: GuiController) -> None:
+    controller._thread_pool = SimpleNamespace(start=lambda worker: worker.run())
+
+
 pytestmark = pytest.mark.integration
 
 
@@ -236,6 +240,7 @@ def test_rotate_input_image_noops_without_loaded_input(monkeypatch) -> None:
 def test_load_raw_image_uses_pipeline_input_settings_and_builds_preview_stack(monkeypatch) -> None:
     viewer = FakeViewer([FakeLayer(np.zeros((2, 2, 3), dtype=np.float32), name='older')])
     controller = GuiController(viewer=viewer, widgets=object())
+    _run_workers_inline(controller)
     gui_state = make_test_controller_gui_state()
     gui_state.input_image.io.input_color_space = 'Display P3'
     gui_state.input_image.io.input_cctf_decoding = True
@@ -265,7 +270,7 @@ def test_load_raw_image_uses_pipeline_input_settings_and_builds_preview_stack(mo
 
     controller.load_raw_image('C:/tmp/example.nef')
 
-    assert captured['status'] == ('Loading raw...', 0)
+    assert captured['status'] == ('Loading RAW image (large files may take a while)...', 0)
     assert captured['path'] == 'C:/tmp/example.nef'
     assert captured['kwargs'] == {
         'white_balance': 'custom',
@@ -289,6 +294,7 @@ def test_load_raw_image_uses_pipeline_input_settings_and_builds_preview_stack(mo
 
 def test_load_raw_image_requests_auto_preview_once_when_enabled(monkeypatch) -> None:
     controller = GuiController(viewer=object(), widgets=SimpleNamespace(simulation=SimpleNamespace(auto_preview_value=lambda: True)))
+    _run_workers_inline(controller)
     raw_image = np.full((4, 2, 3), 0.4, dtype=np.float32)
     preview_image = np.full((2, 1, 3), 0.6, dtype=np.float32)
     captured: dict[str, object] = {}
@@ -309,11 +315,38 @@ def test_load_raw_image_requests_auto_preview_once_when_enabled(monkeypatch) -> 
     assert captured['preview_requests'] == 1
 
 
+def test_load_raw_image_runs_in_background_and_ignores_duplicate_request(monkeypatch) -> None:
+    controller = GuiController(viewer=object(), widgets=object())
+    started_workers = []
+    statuses = []
+    captured = {}
+    controller._thread_pool = SimpleNamespace(start=started_workers.append)
+    monkeypatch.setattr(controller_module, 'collect_gui_state', lambda *, widgets: make_test_controller_gui_state())
+    monkeypatch.setattr(controller_module, 'load_and_process_raw_file', lambda *args, **kwargs: captured.setdefault('loaded', True))
+    monkeypatch.setattr(
+        controller_module,
+        'set_status',
+        lambda viewer, message, timeout_ms=5000: statuses.append((message, timeout_ms)),
+    )
+
+    controller.load_raw_image('C:/tmp/example.nef')
+    controller.load_raw_image('C:/tmp/another.nef')
+
+    assert len(started_workers) == 1
+    assert 'loaded' not in captured
+    assert controller._active_raw_load_worker is started_workers[0]
+    assert statuses == [
+        ('Loading RAW image (large files may take a while)...', 0),
+        ('A RAW image is already loading', 5000),
+    ]
+
+
 def test_load_raw_image_reports_invalid_custom_white_balance_without_mutating_layers(monkeypatch) -> None:
     viewer = FakeViewer([
         FakeLayer(np.zeros((2, 2, 3), dtype=np.float32), name='older'),
     ])
     controller = GuiController(viewer=viewer, widgets=object())
+    _run_workers_inline(controller)
     gui_state = make_test_controller_gui_state()
     gui_state.gui_only.load_raw.white_balance = 'custom'
     gui_state.gui_only.load_raw.temperature = 3200.0
@@ -341,13 +374,13 @@ def test_load_raw_image_reports_invalid_custom_white_balance_without_mutating_la
 
     controller.load_raw_image('C:/tmp/example.nef')
 
-    assert statuses == [('Loading raw...', 0), ('Load raw failed', 5000)]
+    assert statuses == [('Loading RAW image (large files may take a while)...', 0), ('Load raw failed', 5000)]
     assert captured_dialog == {
         'parent': 'dialog-parent',
         'title': 'Load raw',
         'message': (
             'Failed to load RAW image.\n\n'
-            'RAW file does not expose a usable camera XYZ matrix for custom white balance.'
+            'ValueError: RAW file does not expose a usable camera XYZ matrix for custom white balance.'
         ),
     }
     assert len(viewer.layers) == 1
@@ -356,6 +389,7 @@ def test_load_raw_image_reports_invalid_custom_white_balance_without_mutating_la
 def test_load_raw_image_reports_when_lens_correction_is_not_applied(monkeypatch) -> None:
     viewer = FakeViewer([FakeLayer(np.zeros((2, 2, 3), dtype=np.float32), name='older')])
     controller = GuiController(viewer=viewer, widgets=object())
+    _run_workers_inline(controller)
     gui_state = make_test_controller_gui_state()
     gui_state.gui_only.load_raw.lens_correction = True
     raw_image = np.full((2, 2, 3), 0.4, dtype=np.float32)
@@ -385,7 +419,7 @@ def test_load_raw_image_reports_when_lens_correction_is_not_applied(monkeypatch)
     assert captured['kwargs']['lens_correction'] is True
     assert captured['kwargs']['lens_info_out'] == {}
     assert statuses == [
-        ('Loading raw...', 0),
+        ('Loading RAW image (large files may take a while)...', 0),
         ('Loaded raw, lens correction not applied', 5000),
     ]
 
@@ -531,10 +565,25 @@ def test_start_simulation_reports_persistent_computing_status(monkeypatch) -> No
 
     controller._start_simulation(source_layer_name=INPUT_PREVIEW_LAYER_NAME, mode_label='Preview')
 
-    assert captured['status'] == ('Computing preview...', 0)
+    assert captured['status'] == ('Computing preview... 0%', 0)
     assert captured['white_padding'] == gui_state.gui_only.display.white_padding
     assert controller._active_simulation_label == 'Preview'
     np.testing.assert_allclose(captured['worker']._request.image, np.double(preview_image))
+
+
+def test_simulation_progress_updates_status_bar(monkeypatch) -> None:
+    controller = GuiController(viewer=object(), widgets=object())
+    controller._active_simulation_label = 'Scan'
+    statuses = []
+    monkeypatch.setattr(
+        controller_module,
+        'set_status',
+        lambda viewer, message, timeout_ms=5000: statuses.append((message, timeout_ms)),
+    )
+
+    controller._on_simulation_progress(50)
+
+    assert statuses == [('Computing scan... 50%', 0)]
 
 
 def test_start_simulation_skips_computing_status_for_silent_preview(monkeypatch) -> None:

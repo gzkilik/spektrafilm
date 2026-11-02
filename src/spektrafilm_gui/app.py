@@ -147,7 +147,7 @@ def _create_viewer() -> Any:
     settings = get_settings()
     appearance = getattr(settings, 'appearance', None)
     if appearance is not None:
-        setattr(cast(Any, appearance), 'theme', 'dark')
+        setattr(cast(Any, appearance), 'theme', 'light')
     return viewer
 
 

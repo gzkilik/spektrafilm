@@ -2,6 +2,8 @@
 
 The user-facing interactive application: image preview, parameter widgets, profile management, animation, exports.
 
+The GUI uses a light theme.
+
 ## Philosophy
 
 This package is the **interactive layer** on top of `spektrafilm`. It depends on the runtime; it is not depended on by the runtime.

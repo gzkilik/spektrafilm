@@ -60,7 +60,7 @@ def _get_current_stylesheet() -> str:
         return ''
 
 
-def _request_dark_title_bar(window: QWidget) -> bool:
+def _request_dark_title_bar(window: QWidget, *, enabled: bool = True) -> bool:
     if sys.platform != 'win32':
         return False
 
@@ -79,7 +79,7 @@ def _request_dark_title_bar(window: QWidget) -> bool:
     except (ImportError, AttributeError):
         return False
 
-    value = ctypes.c_int(1)
+    value = ctypes.c_int(int(enabled))
     value_size = ctypes.sizeof(value)
     for attribute in (_DWMWA_USE_IMMERSIVE_DARK_MODE, _DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1):
         try:
@@ -512,7 +512,7 @@ def build_main_window(
     central_layout.addWidget(splitter, 1)
 
     main_window.setCentralWidget(central)
-    _request_dark_title_bar(main_window)
+    _request_dark_title_bar(main_window, enabled=False)
     main_window.statusBar().showMessage('ready', 3000)
     return main_window
 

@@ -258,7 +258,7 @@ def test_request_dark_title_bar_uses_windows_dwm_api(monkeypatch) -> None:
 
     class FakeCtypes:
         def __init__(self) -> None:
-            self.calls: list[tuple[int, int, int]] = []
+            self.calls: list[tuple[int, int, object, int]] = []
             self.windll = SimpleNamespace(dwmapi=SimpleNamespace(DwmSetWindowAttribute=self._set_window_attribute))
 
         @staticmethod
@@ -274,7 +274,7 @@ def test_request_dark_title_bar_uses_windows_dwm_api(monkeypatch) -> None:
             return value
 
         def _set_window_attribute(self, hwnd: int, attribute: int, _value: object, value_size: int) -> int:
-            self.calls.append((hwnd, attribute, value_size))
+            self.calls.append((hwnd, attribute, _value, value_size))
             return 0 if attribute == napari_layout_module._DWMWA_USE_IMMERSIVE_DARK_MODE else 1
 
     fake_ctypes = FakeCtypes()
@@ -286,7 +286,40 @@ def test_request_dark_title_bar_uses_windows_dwm_api(monkeypatch) -> None:
     )
 
     assert napari_layout_module._request_dark_title_bar(FakeWindow()) is True
-    assert fake_ctypes.calls == [(1234, napari_layout_module._DWMWA_USE_IMMERSIVE_DARK_MODE, 4)]
+    assert fake_ctypes.calls == [(1234, napari_layout_module._DWMWA_USE_IMMERSIVE_DARK_MODE, 1, 4)]
+
+
+def test_request_dark_title_bar_can_disable_dark_mode(monkeypatch) -> None:
+    class FakeWindow:
+        def winId(self):  # noqa: N802 - Qt API name
+            return 1234
+
+    class FakeCtypes:
+        def __init__(self) -> None:
+            self.values: list[int] = []
+            self.windll = SimpleNamespace(dwmapi=SimpleNamespace(DwmSetWindowAttribute=self._set_window_attribute))
+
+        @staticmethod
+        def c_int(value: int) -> int:
+            return value
+
+        @staticmethod
+        def sizeof(_value: object) -> int:
+            return 4
+
+        def byref(self, value: int) -> int:
+            self.values.append(value)
+            return value
+
+        def _set_window_attribute(self, *_args) -> int:
+            return 0
+
+    fake_ctypes = FakeCtypes()
+    monkeypatch.setattr(napari_layout_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(napari_layout_module, 'import_module', lambda name: fake_ctypes)
+
+    assert napari_layout_module._request_dark_title_bar(FakeWindow(), enabled=False) is True
+    assert fake_ctypes.values == [0]
 
 
 def test_build_controls_panel_places_gamut_compression_sections_on_advanced_tab(monkeypatch) -> None:

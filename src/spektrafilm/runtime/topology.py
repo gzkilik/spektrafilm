@@ -63,22 +63,39 @@ def run_topology(
     image: Any,
     *,
     on_fire: Callable[[Node, float], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Any:
     """Walk ``topology`` in declared order, firing every node whose reads
     are satisfied. Stops as soon as ``collect`` is in state and returns it.
 
     ``on_fire`` is invoked as ``on_fire(node, elapsed_seconds)`` after each
     node fires; the dispatcher in :class:`SimulationPipeline` uses it to
-    record per-node timings.
+    record per-node timings. ``on_progress`` receives 0 at the start and an
+    integer percentage after each node on the path to ``collect`` completes.
     """
+    expected_nodes: list[Node] = []
+    available_taps = {inject}
+    for node in topology:
+        if all(key in available_taps for key in node.reads):
+            expected_nodes.append(node)
+            available_taps.update(node.writes)
+            if collect in available_taps:
+                break
+
     state: dict[str, Any] = {inject: image}
+    completed_nodes = 0
+    if on_progress is not None:
+        on_progress(0)
     for node in topology:
         if all(k in state for k in node.reads):
             t0 = perf_counter()
             node.fire(state)
             elapsed = perf_counter() - t0
+            completed_nodes += 1
             if on_fire is not None:
                 on_fire(node, elapsed)
+            if on_progress is not None and expected_nodes:
+                on_progress(round(completed_nodes * 100 / len(expected_nodes)))
             if collect in state:
                 return state[collect]
     raise RuntimeError(

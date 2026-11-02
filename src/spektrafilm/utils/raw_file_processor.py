@@ -417,7 +417,10 @@ def load_and_process_raw_file(
 
     with rawpy.imread(str(raw_path)) as raw:
         params, postprocess_adaptation, tint_multiplier = _postprocess_params(white_balance, temperature, tint)
-        rgb = raw.postprocess(**params).astype(np.float32) / np.float32(65535.0)
+        processed_rgb = raw.postprocess(**params)
+        rgb = processed_rgb.astype(np.float32)
+        del processed_rgb
+        np.divide(rgb, np.float32(65535.0), out=rgb)
 
     if lens_correction:
         exif_metadata = _read_exif_metadata(raw_path)

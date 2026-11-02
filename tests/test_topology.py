@@ -59,29 +59,49 @@ class TestRunTopology:
         result = run_topology(self._linear_chain(), inject="a", collect="d", image=10)
         assert result == ((10 + 1) * 2) - 3
 
+    def test_progress_reports_percentage_after_each_stage(self):
+        progress = []
+
+        result = run_topology(
+            self._linear_chain(),
+            inject="a",
+            collect="d",
+            image=10,
+            on_progress=progress.append,
+        )
+
+        assert result == ((10 + 1) * 2) - 3
+        assert progress == [0, 33, 67, 100]
+
     def test_intermediate_collect_stops_early(self):
         fired = []
+        progress = []
         result = run_topology(
             self._linear_chain(),
             inject="a",
             collect="c",
             image=10,
             on_fire=lambda node, elapsed: fired.append(node.label),
+            on_progress=progress.append,
         )
         assert result == (10 + 1) * 2
         assert fired == ["step1", "step2"]
+        assert progress == [0, 50, 100]
 
     def test_inject_at_intermediate_skips_upstream_nodes(self):
         fired = []
+        progress = []
         result = run_topology(
             self._linear_chain(),
             inject="b",
             collect="d",
             image=100,
             on_fire=lambda node, elapsed: fired.append(node.label),
+            on_progress=progress.append,
         )
         assert result == (100 * 2) - 3
         assert fired == ["step2", "step3"]
+        assert progress == [0, 50, 100]
 
     def test_unreachable_collect_raises(self):
         with pytest.raises(RuntimeError, match="no node path reaches"):

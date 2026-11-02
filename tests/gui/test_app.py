@@ -38,7 +38,7 @@ def _section_state(state, section_name: str):
     return getattr(state, section_name)
 
 
-def test_create_viewer_uses_system_dark_theme(monkeypatch) -> None:
+def test_create_viewer_uses_light_theme(monkeypatch) -> None:
     fake_viewer = object()
     fake_appearance = SimpleNamespace(theme=None)
     fake_settings = SimpleNamespace(appearance=fake_appearance)
@@ -54,10 +54,10 @@ def test_create_viewer_uses_system_dark_theme(monkeypatch) -> None:
     viewer = app_module._create_viewer()
 
     assert viewer is fake_viewer
-    assert fake_appearance.theme == 'dark'
+    assert fake_appearance.theme == 'light'
 
 
-def test_apply_app_palette_uses_fixed_dark_palette(monkeypatch) -> None:
+def test_apply_app_palette_uses_fixed_light_palette(monkeypatch) -> None:
     captured: dict[str, object] = {}
     fake_app = SimpleNamespace(setPalette=lambda palette: captured.setdefault('palette', palette))
 
@@ -67,10 +67,11 @@ def test_apply_app_palette_uses_fixed_dark_palette(monkeypatch) -> None:
 
     palette = captured['palette']
     assert isinstance(palette, QtGui.QPalette)
-    assert palette.color(QtGui.QPalette.Window).name() == app_module.GRAY_0
+    assert palette.color(QtGui.QPalette.Window).name() == '#f4f4f4'
     assert palette.color(QtGui.QPalette.Base).name() == app_module.GRAY_1
     assert palette.color(QtGui.QPalette.AlternateBase).name() == app_module.GRAY_2
-    assert palette.color(QtGui.QPalette.WindowText).name() == app_module.TEXT_MAIN
+    assert palette.color(QtGui.QPalette.WindowText).name() == '#24292f'
+    assert palette.color(QtGui.QPalette.HighlightedText).name() == '#24292f'
     assert palette.color(QtGui.QPalette.Highlight).name() == app_module.TEXT_SELECTION_BG
 
 
